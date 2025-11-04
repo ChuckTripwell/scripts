@@ -1,0 +1,57 @@
+#!/bin/bash
+set -euo pipefail
+IFS=$'\n\t'
+
+ROOT_MOUNT="/"
+SUBVOL_A="@root_a"
+SUBVOL_B="@root_b"
+PERSISTENT_SUBVOL="@persist"
+SNAPPER_CONFIG="root"
+USER_TO_RUN="$(logname)"
+LOCKFILE="/var/run/ab_update.lock"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+log() { echo "$(date +'%Y-%m-%d %H:%M:%S') - $*"; }
+get_root_device() { findmnt -no SOURCE "$ROOT_MOUNT"; }
+get_current_default_subvol() { btrfs subvolume get-default "$ROOT_MOUNT" | awk '{print $2}'; }
+set_default_subvol() { btrfs subvolume set-default "$1" "$ROOT_MOUNT"; }
+snapshot_pre() { snapper -c "${SNAPPER_CONFIG}" create -t pre -d "pre-update ${TIMESTAMP}"; }
+snapshot_post() { snapper -c "${SNAPPER_CONFIG}" create -t post -d "post-update ${TIMESTAMP}"; }
+
+exec 200>"${LOCKFILE}"
+flock -n 200 || { log "Another instance is running, exiting."; exit 1; }
+
+log "Starting A/B updater."
+ROOT_DEV=$(get_root_device)
+cur_subvol_id=$(get_current_default_subvol)
+subvol_list=$(btrfs subvolume list "$ROOT_MOUNT")
+subvol_a_id=$(echo "$subvol_list" | awk "\$NF==\"${SUBVOL_A}\"{print \$2}")
+subvol_b_id=$(echo "$subvol_list" | awk "\$NF==\"${SUBVOL_B}\"{print \$2}")
+
+[ "$cur_subvol_id" = "$subvol_a_id" ] && { target_name="$SUBVOL_B"; target_id="$subvol_b_id"; } || { target_name="$SUBVOL_A"; target_id="$subvol_a_id"; }
+[ -z "$target_id" ] && { log "ERROR: Target subvolume ID not found for ${target_name}"; exit 1; }
+
+rw_snapshot="${target_name}_rw_${TIMESTAMP}"
+btrfs subvolume snapshot -r "${ROOT_MOUNT}/$(echo $cur_subvol_id | awk '{print $NF}')" "${ROOT_MOUNT}/${rw_snapshot}"
+
+mkdir -p /mnt/ab_update
+mount -o subvol="${rw_snapshot}",rw "$ROOT_DEV" /mnt/ab_update
+mkdir -p /mnt/ab_update/persist
+mount -o subvol="${PERSISTENT_SUBVOL}" "$ROOT_DEV" /mnt/ab_update/persist
+
+snapshot_pre
+
+[ $# -eq 0 ] && CMD="paru -Syu --noconfirm" || CMD="paru -Sy --noconfirm $*"
+
+sudo -u "${USER_TO_RUN}" chroot /mnt/ab_update /bin/bash -lc "${CMD}"
+
+snapshot_post
+
+umount /mnt/ab_update/persist || true
+umount /mnt/ab_update || true
+rmdir /mnt/ab_update || true
+
+set_default_subvol "$target_id"
+log "Default subvolume switched to ${target_name} (ID: ${target_id})"
+log "Update complete. Reboot to use the new root."
+exit 0
