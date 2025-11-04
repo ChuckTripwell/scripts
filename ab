@@ -1,0 +1,73 @@
+#!/bin/bash
+set -euo pipefail
+IFS=$'\n\t'
+
+ROOT_MOUNT="/"
+SUBVOL_A="@root_a"
+SUBVOL_B="@root_b"
+PERSISTENT_SUBVOL="@persist"
+SNAPPER_CONFIG="root"
+USER_TO_RUN="$(logname)"
+LOCKFILE="/var/run/ab_update.lock"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+RW_MOUNT="/mnt/ab_update"
+
+log() { echo "$(date +'%Y-%m-%d %H:%M:%S') - $*"; }
+
+# Cleanup function for crash or exit
+cleanup() {
+    log "Running cleanup..."
+    mountpoint -q "${RW_MOUNT}/persist" && umount "${RW_MOUNT}/persist" || true
+    mountpoint -q "${RW_MOUNT}" && umount "${RW_MOUNT}" || true
+    [ -d "${RW_MOUNT}" ] && rmdir "${RW_MOUNT}" || true
+    [ -f "$LOCKFILE" ] && rm -f "$LOCKFILE"
+}
+trap cleanup EXIT
+
+# Ensure single instance
+exec 200>"${LOCKFILE}"
+flock -n 200 || { log "Another instance is running, exiting."; exit 1; }
+
+# Determine active and target subvolumes
+ROOT_DEV=$(findmnt -no SOURCE "$ROOT_MOUNT")
+cur_subvol_id=$(btrfs subvolume get-default "$ROOT_MOUNT" | awk '{print $2}')
+subvol_list=$(btrfs subvolume list "$ROOT_MOUNT")
+subvol_a_id=$(echo "$subvol_list" | awk "\$NF==\"${SUBVOL_A}\"{print \$2}")
+subvol_b_id=$(echo "$subvol_list" | awk "\$NF==\"${SUBVOL_B}\"{print \$2}")
+
+[ "$cur_subvol_id" = "$subvol_a_id" ] && { target_name="$SUBVOL_B"; target_id="$subvol_b_id"; } || { target_name="$SUBVOL_A"; target_id="$subvol_a_id"; }
+[ -z "$target_id" ] && { log "ERROR: Target subvolume ID not found for ${target_name}"; exit 1; }
+
+# Create a RW snapshot for the update
+rw_snapshot="${target_name}_rw_${TIMESTAMP}"
+btrfs subvolume snapshot -r "${ROOT_MOUNT}/$(echo $cur_subvol_id | awk '{print $NF}')" "${ROOT_MOUNT}/${rw_snapshot}"
+
+# Mount snapshot and persistent data
+mkdir -p "${RW_MOUNT}"
+mount -o subvol="${rw_snapshot}",rw "$ROOT_DEV" "${RW_MOUNT}"
+mkdir -p "${RW_MOUNT}/persist"
+mount -o subvol="${PERSISTENT_SUBVOL}" "$ROOT_DEV" "${RW_MOUNT}/persist"
+
+# Snapper pre-update
+snapper -c "${SNAPPER_CONFIG}" create -t pre -d "pre-update ${TIMESTAMP}"
+
+# Determine command: install vs update
+[ $# -eq 0 ] && CMD="paru -Syu --noconfirm" || CMD="paru -Sy --noconfirm $*"
+
+# Run package manager as normal user in chroot
+sudo -u "${USER_TO_RUN}" chroot "${RW_MOUNT}" /bin/bash -lc "${CMD}"
+
+# Snapper post-update
+snapper -c "${SNAPPER_CONFIG}" create -t post -d "post-update ${TIMESTAMP}"
+
+# Unmount and cleanup
+umount "${RW_MOUNT}/persist" || true
+umount "${RW_MOUNT}" || true
+rmdir "${RW_MOUNT}" || true
+
+# Switch default subvolume to updated one
+btrfs subvolume set-default "$target_id" "$ROOT_MOUNT"
+
+log "Default subvolume switched to ${target_name} (ID: ${target_id})"
+log "Update complete. Reboot to use the new root."
+exit 0
