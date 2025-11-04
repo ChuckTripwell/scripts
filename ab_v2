@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+
+LOCKFILE="/tmp/atomic-ab-script.lock"
+[ -e "${LOCKFILE}" ] && { echo "ERROR: script already running (lock file ${LOCKFILE} exists)"; exit 1; }
+trap 'rm -f "${LOCKFILE}"' EXIT
+touch "${LOCKFILE}"
+
+fatal(){ echo "FATAL: $*" >&2; exit 1; }
+
+remove_pacman_lock(){
+  local l="/var/lib/pacman/db.lck"
+  [ -e "${l}" ] && { echo "Found pacman lockfile ${l}, removing it"; rm -f "${l}" || fatal "Could not remove pacman lock"; }
+}
+
+ensure_snapper_installed(){
+  command -v snapper >/dev/null 2>&1 || {
+    echo "Snapper not found — installing it"
+    remove_pacman_lock
+    paru -S --noconfirm snapper || fatal "Failed to install snapper"
+  }
+  echo "Snapper is installed"
+}
+
+install_packages_atomic(){
+  [ $# -ge 1 ] || fatal "No package name(s) provided"
+  remove_pacman_lock
+  ensure_snapper_installed
+
+  local pkg_list="$*"
+  local timestamp
+  timestamp=$(date +"%Y-%m-%d_%H:%M:%S")
+  local desc="atomic install via $0 ${pkg_list} at ${timestamp}"
+
+  echo "*** Installing packages: ${pkg_list}"
+  echo "Snapshot description: ${desc}"
+
+  snapper -c root create --command "paru -S --noconfirm ${pkg_list}" \
+    --description "${desc}" --print-number || fatal "snapper/paru operation failed for packages: ${pkg_list}"
+  echo "Packages ${pkg_list} installed atomically with snapshots."
+}
+
+rollback_snapshot(){
+  [ $# -ge 1 ] || fatal "No snapshot number provided"
+  local sn="$1"
+  echo "*** Rolling back to snapshot number: ${sn}"
+  ensure_snapper_installed
+  snapper -c root rollback "${sn}" || fatal "Snapper rollback failed for snapshot ${sn}"
+  echo "Rollback to snapshot ${sn} complete — reboot."
+}
+
+update_system(){
+  remove_pacman_lock
+  ensure_snapper_installed
+
+  local timestamp
+  timestamp=$(date +"%Y-%m-%d_%H:%M:%S")
+  local desc="atomic system update via $0 at ${timestamp}"
+
+  echo "*** Updating system (official + AUR)"
+  echo "Snapshot description: ${desc}"
+
+  snapper -c root create --command "paru -Syu --noconfirm" \
+    --description "${desc}" --print-number || fatal "System update via snapper/paru failed"
+  echo "System update complete with snapshot."
+}
+
+show_help(){
+  cat <<EOF
+Usage:
+  $0 help
+  $0 add <package1> [package2 ...]
+  $0 rollback <snapshot_number>
+  $0 update
+
+Commands:
+  help                     Show this help message.
+  add <package(s)>         Install the named package(s) atomically (pre/post snapshots).
+  rollback <snapshot>       Roll back system root to the given snapshot number.
+  update                    Update the entire system atomically (official repos + AUR).
+EOF
+}
+
+[ "${1:-}" = "help" ] && { show_help; exit 0; } \
+  || [ "${1:-}" = "add" ] && { shift; install_packages_atomic "$@"; exit 0; } \
+  || [ "${1:-}" = "rollback" ] && { shift; rollback_snapshot "$1"; exit 0; } \
+  || [ "${1:-}" = "update" ] && { update_system; exit 0; } \
+  || { show_help; exit 1; }
