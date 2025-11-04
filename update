@@ -1,0 +1,44 @@
+#!/bin/bash
+# Must run as root
+set -euo pipefail
+IFS=$'\n\t'
+
+[ "$EUID" -ne 0 ] && echo "Run as root" && exit 1
+
+LOCK="/var/run/ro_paru.lock"
+exec 200>"$LOCK"
+flock -n 200 || { echo "Another instance is running."; exit 1; }
+
+cleanup() { btrfs property set / ro true || true; rm -f "$LOCK"; }
+trap cleanup EXIT
+
+btrfs property set / ro false
+
+# Subvolume creation helper
+create_subvolume() {
+    btrfs subvolume show "$1" &>/dev/null || \
+    (echo "Creating Btrfs subvolume $1..."; \
+     mv "$1" "$1.old"; \
+     btrfs subvolume create "$1"; \
+     rsync -a --remove-source-files "$1.old/" "$1/"; \
+     find "$1.old" -type d -empty -delete; \
+     rm -rf "$1.old")
+}
+
+create_subvolume "/etc/NetworkManager/system-connections"
+create_subvolume "/var/lib/bluetooth"
+
+# Pre-snapshot
+snapper create -d "$(echo taken before $0 $@ - at $(date +%Y%m%d_%H%M%S))"
+
+# Pacman lock handling
+[ -f /var/lib/pacman/db.lck ] && \
+(pid=$(cat /var/lib/pacman/db.lck 2>/dev/null || true); \
+ kill -0 "$pid" 2>/dev/null || { echo "Removing stale pacman lock..."; rm -f /var/lib/pacman/db.lck; }; \
+ while [ -f /var/lib/pacman/db.lck ] && kill -0 "$pid" 2>/dev/null; do sleep 2; done)
+
+# Run paru as logged-in user
+sudo -u "$(logname)" paru "$@"
+
+# Post-snapshot
+snapper create -d "$(echo taken after $0 $@ - at $(date +%Y%m%d_%H%M%S))"
