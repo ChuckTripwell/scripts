@@ -1,57 +1,72 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
-IFS=$'\n\t'
 
-ROOT_MOUNT="/"
-SUBVOL_A="@root_a"
-SUBVOL_B="@root_b"
-PERSISTENT_SUBVOL="@persist"
-SNAPPER_CONFIG="root"
-USER_TO_RUN="$(logname)"
-LOCKFILE="/var/run/ab_update.lock"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+# ---------------------------
+# Root check
+# ---------------------------
+[ "$(id -u)" -eq 0 ] || { echo "This script must be run as root or via sudo."; exit 1; }
 
-log() { echo "$(date +'%Y-%m-%d %H:%M:%S') - $*"; }
-get_root_device() { findmnt -no SOURCE "$ROOT_MOUNT"; }
-get_current_default_subvol() { btrfs subvolume get-default "$ROOT_MOUNT" | awk '{print $2}'; }
-set_default_subvol() { btrfs subvolume set-default "$1" "$ROOT_MOUNT"; }
-snapshot_pre() { snapper -c "${SNAPPER_CONFIG}" create -t pre -d "pre-update ${TIMESTAMP}"; }
-snapshot_post() { snapper -c "${SNAPPER_CONFIG}" create -t post -d "post-update ${TIMESTAMP}"; }
+# ---------------------------
+# Lockfile
+# ---------------------------
+LOCKFILE="${LOCKFILE:-/tmp/ab.lck}"
+exec 200>"$LOCKFILE"
+flock -n 200 || { echo "Another instance is running ($LOCKFILE)"; exit 1; }
+trap 'rm -f "$LOCKFILE"' EXIT
 
-exec 200>"${LOCKFILE}"
-flock -n 200 || { log "Another instance is running, exiting."; exit 1; }
+# ---------------------------
+# Config
+# ---------------------------
+PARU_CMD="${PARU_CMD:-paru}"
+LOGFILE="${LOGFILE:-/var/log/ab_update.log}"
+NEXT_SUBVOL="/NEXT"
 
-log "Starting A/B updater."
-ROOT_DEV=$(get_root_device)
-cur_subvol_id=$(get_current_default_subvol)
-subvol_list=$(btrfs subvolume list "$ROOT_MOUNT")
-subvol_a_id=$(echo "$subvol_list" | awk "\$NF==\"${SUBVOL_A}\"{print \$2}")
-subvol_b_id=$(echo "$subvol_list" | awk "\$NF==\"${SUBVOL_B}\"{print \$2}")
+# ---------------------------
+# Detect root device and root subvolume
+# ---------------------------
+ROOT_DEV=$(grep ' / ' /proc/mounts | awk '{print $1}')
+ROOT_ID=$(btrfs subvolume get-default / | awk '{print $2}')
+ROOT_PATH=$(btrfs subvolume list / | awk -v rid="$ROOT_ID" '$2==rid {print $NF}')
 
-[ "$cur_subvol_id" = "$subvol_a_id" ] && { target_name="$SUBVOL_B"; target_id="$subvol_b_id"; } || { target_name="$SUBVOL_A"; target_id="$subvol_a_id"; }
-[ -z "$target_id" ] && { log "ERROR: Target subvolume ID not found for ${target_name}"; exit 1; }
+# ---------------------------
+# Setup stage: create /NEXT if missing
+# ---------------------------
+btrfs subvolume show "$NEXT_SUBVOL" >/dev/null 2>&1 || btrfs subvolume snapshot -r "/$ROOT_PATH" "$NEXT_SUBVOL"
 
-rw_snapshot="${target_name}_rw_${TIMESTAMP}"
-btrfs subvolume snapshot -r "${ROOT_MOUNT}/$(echo $cur_subvol_id | awk '{print $NF}')" "${ROOT_MOUNT}/${rw_snapshot}"
+# ---------------------------
+# Snapper before snapshot
+# ---------------------------
+snapper -c root create --description "taken before $0 $* - $(date '+%Y-%m-%d %H:%M:%S')" || echo "Before snapshot failed" >>"$LOGFILE"
 
-mkdir -p /mnt/ab_update
-mount -o subvol="${rw_snapshot}",rw "$ROOT_DEV" /mnt/ab_update
-mkdir -p /mnt/ab_update/persist
-mount -o subvol="${PERSISTENT_SUBVOL}" "$ROOT_DEV" /mnt/ab_update/persist
+# ---------------------------
+# Make /NEXT writable
+# ---------------------------
+btrfs property set -ts "$NEXT_SUBVOL" ro false
 
-snapshot_pre
+# ---------------------------
+# Run paru inside /NEXT using systemd-nspawn
+# ---------------------------
+systemd-nspawn -D "$NEXT_SUBVOL" --as-pid2 sudo -u "$(logname)" /bin/bash -c "$PARU_CMD $*"
 
-[ $# -eq 0 ] && CMD="paru -Syu --noconfirm" || CMD="paru -Sy --noconfirm $*"
+# ---------------------------
+# Snapper after snapshot
+# ---------------------------
+snapper -c root create --description "taken after $0 $* - $(date '+%Y-%m-%d %H:%M:%S')" || echo "After snapshot failed" >>"$LOGFILE"
 
-sudo -u "${USER_TO_RUN}" chroot /mnt/ab_update /bin/bash -lc "${CMD}"
+# ---------------------------
+# Switch default subvolume to /NEXT
+# ---------------------------
+NEXT_ID=$(btrfs subvolume list / | awk -v tvol="$NEXT_SUBVOL" '$NF==tvol {print $2}')
+btrfs subvolume set-default "$NEXT_ID" /
 
-snapshot_post
+# ---------------------------
+# Set RO/RW flags
+# ---------------------------
+btrfs property set -ts "/$ROOT_PATH" ro true
+btrfs property set -ts "$NEXT_SUBVOL" ro false
 
-umount /mnt/ab_update/persist || true
-umount /mnt/ab_update || true
-rmdir /mnt/ab_update || true
-
-set_default_subvol "$target_id"
-log "Default subvolume switched to ${target_name} (ID: ${target_id})"
-log "Update complete. Reboot to use the new root."
-exit 0
+# ---------------------------
+# Log completion
+# ---------------------------
+echo "$(date) - Switched default to $NEXT_SUBVOL" >>"$LOGFILE"
+echo "Update complete. Please reboot manually to activate /NEXT."
