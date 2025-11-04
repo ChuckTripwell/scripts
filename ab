@@ -41,7 +41,7 @@ subvol_a_id=$(echo "$subvol_list" | awk "\$NF==\"${SUBVOL_A}\"{print \$2}")
 subvol_b_id=$(echo "$subvol_list" | awk "\$NF==\"${SUBVOL_B}\"{print \$2}")
 
 [ "$cur_subvol_id" = "$subvol_a_id" ] && { target_name="$SUBVOL_B"; target_id="$subvol_b_id"; } || { target_name="$SUBVOL_A"; target_id="$subvol_a_id"; }
-[ -z "$target_id" ] && { log "ERROR: Target subvolume ID not found for ${target_name}"; exit 1; }
+[ -z "$target_id" ] && target_id="A"
 
 # Create a RW snapshot for the update
 rw_snapshot="${target_name}_rw_${TIMESTAMP}"
