@@ -1,5 +1,4 @@
 #!/bin/bash
-# Must run as root
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -9,15 +8,29 @@ LOCK="/var/run/ro_paru.lock"
 exec 200>"$LOCK"
 flock -n 200 || { echo "Another instance is running."; exit 1; }
 
-cleanup() { btrfs property set / ro true || true; rm -f "$LOCK"; }
-trap cleanup EXIT
+# Cleanup on exit or interruption
+cleanup() {
+    # Restore root to read-only
+    btrfs property set / ro true || true
 
-btrfs property set / ro false
+    # Remove script lock
+    rm -f "$LOCK"
 
-# Subvolume creation helper
+    # Remove stale pacman lock
+    if [ -f /var/lib/pacman/db.lck ]; then
+        pid=$(cat /var/lib/pacman/db.lck 2>/dev/null || true)
+        kill -0 "$pid" 2>/dev/null || {
+            echo "Removing stale pacman lock..."
+            rm -f /var/lib/pacman/db.lck
+        }
+    fi
+}
+trap cleanup EXIT INT TERM
+
+# Subvolume helper
 create_subvolume() {
     btrfs subvolume show "$1" &>/dev/null || \
-    (echo "Creating Btrfs subvolume $1..."; \
+    (echo "Creating subvolume $1..."; \
      mv "$1" "$1.old"; \
      btrfs subvolume create "$1"; \
      rsync -a --remove-source-files "$1.old/" "$1/"; \
@@ -25,20 +38,17 @@ create_subvolume() {
      rm -rf "$1.old")
 }
 
+# Persistent writable directories
 create_subvolume "/etc/NetworkManager/system-connections"
 create_subvolume "/var/lib/bluetooth"
 
 # Pre-snapshot
 snapper create -d "$(echo taken before $0 $@ - at $(date +%Y%m%d_%H%M%S))"
 
-# Pacman lock handling
-[ -f /var/lib/pacman/db.lck ] && \
-(pid=$(cat /var/lib/pacman/db.lck 2>/dev/null || true); \
- kill -0 "$pid" 2>/dev/null || { echo "Removing stale pacman lock..."; rm -f /var/lib/pacman/db.lck; }; \
- while [ -f /var/lib/pacman/db.lck ] && kill -0 "$pid" 2>/dev/null; do sleep 2; done)
-
-# Run paru as logged-in user
+# Temporarily make root writable for just the next command
+btrfs property set / ro false
 sudo -u "$(logname)" paru "$@"
+btrfs property set / ro true
 
 # Post-snapshot
 snapper create -d "$(echo taken after $0 $@ - at $(date +%Y%m%d_%H%M%S))"
