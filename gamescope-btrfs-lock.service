@@ -7,7 +7,6 @@ After=network.target
 
 [Service]
 Type=simple
-# Run the one-liner directly with bash -c
 ExecStart=/bin/bash -c 'while true; do pidof gamescope >/dev/null && btrfs property set / ro true || btrfs property set / ro false; sleep 2; done'
 Restart=always
 RestartSec=5
