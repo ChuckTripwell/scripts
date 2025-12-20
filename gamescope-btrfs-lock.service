@@ -2,16 +2,15 @@
 # sudo systemctl enable /etc/systemd/system/gamescope-btrfs-lock.service
 
 [Unit]
-Description=Run Command When Gamescope is Active
-After=sound.target
+Description=Toggle root Btrfs readonly based on Gamescope
+After=network.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -c 'while true; do 
-    pgrep -x "gamescope" > /dev/null && (btrfs property set -ts / ro true) || (btrfs property set -ts / ro false)
-    sleep 5; 
-done'
+User=root
+ExecStart=/bin/bash -c 'while true; do pidof gamescope >/dev/null && btrfs property set / ro true || btrfs property set / ro false; sleep 2; done'
 Restart=always
+RestartSec=5
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
