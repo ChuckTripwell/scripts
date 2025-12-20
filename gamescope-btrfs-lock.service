@@ -2,15 +2,16 @@
 # sudo systemctl enable /etc/systemd/system/gamescope-btrfs-lock.service
 
 [Unit]
-Description=Toggle root Btrfs readonly based on Gamescope
+Description=Watch gamescope and toggle Btrfs read-only property
 After=network.target
 
 [Service]
 Type=simple
-User=root
+# Run the one-liner directly with bash -c
 ExecStart=/bin/bash -c 'while true; do pidof gamescope >/dev/null && btrfs property set / ro true || btrfs property set / ro false; sleep 2; done'
 Restart=always
 RestartSec=5
+User=root
 
 [Install]
 WantedBy=multi-user.target
