@@ -1,0 +1,14 @@
+[Unit]
+Description=Run Command When Gamescope is Active
+After=sound.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do 
+    pgrep -x "gamescope" > /dev/null && (btrfs property set -ts / ro true) || (btrfs property set -ts / ro false)
+    sleep 5; 
+done'
+Restart=always
+
+[Install]
+WantedBy=default.target
