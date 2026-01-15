@@ -1,4 +1,2 @@
 # scripts
 forever -WIP-! 
-
-כן.
