@@ -42,15 +42,6 @@ if [[ ! -d "$MODULE_DIR" ]]; then
     exit 1
 fi
 
-# Sign kernel modules
-find "$MODULE_DIR" -type f -name "*.ko*" | while read -r file; do
-    if sbctl sign -s "$file"; then
-        echo "Successfully signed: $file"
-    else
-        echo "Failed to sign: $file"
-    fi
-done
-
 # Sign the kernel image (vmlinuz)
 echo "Signing kernel image (vmlinuz)..."
 sbctl sign -s "$MODULE_DIR"/vmlinuz
@@ -60,7 +51,6 @@ echo "== Committing only signed kernel and modules to OSTree repo =="
 # Commit only the modified modules and kernel image, not the full tree
 NEW_COMMIT=$(ostree commit \
     --repo="$REPO" \
-    --branch="$BRANCH" \
     --tree=dir="$WORKDIR" \
     --subject="Signed kernel modules and kernel image ($(date))")
 
