@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# OSTree variables
 REPO="/sysroot/ostree/repo"
 WORKDIR="/tmp/nextboot"
 BRANCH="custom/signed-nextboot"
 
+# Directory for modules to be signed (you'll want to populate this)
+MODULE_DIR="/tmp/nextboot/"
+
 echo "== Getting current OSTree commit =="
 
+# Get the current OSTree commit hash
 COMMIT=$(ostree admin status --json | jq -r '.deployments[0].checksum')
 
 if [[ -z "$COMMIT" ]]; then
@@ -18,47 +23,48 @@ echo "Current commit: $COMMIT"
 
 echo "== Preparing workspace =="
 
-sudo rm -rf "$WORKDIR"
+# Clean up the workspace before checking out the tree
+rm -rf "$WORKDIR" || true
 mkdir -p "$WORKDIR"
 
 echo "== Checking out OSTree commit =="
 
-sudo ostree checkout \
+# Checkout the full OSTree tree, not just the modules directory
+ostree checkout \
     --union \
     "$COMMIT" \
     "$WORKDIR"
 
-echo "== Signing kernel modules =="
+echo "== Signing kernel modules and kernel image in $MODULE_DIR =="
 
-MODULE_DIR="$WORKDIR/usr/lib/modules"
-
+# Check if the directory exists
 if [[ ! -d "$MODULE_DIR" ]]; then
-    echo "Modules directory missing"
+    echo "Error: $MODULE_DIR does not exist."
     exit 1
 fi
 
-find "$MODULE_DIR" -type f -name "*.ko*" | while read -r module; do
-    echo "Signing $module"
-    sudo sbctl sign -s "$module"
-done
+# Sign the kernel image (vmlinuz)
+echo "Signing kernel image (vmlinuz)..."
+sbctl sign -s "$MODULE_DIR"/usr/lib/modules/*/vmlinuz
 
 echo "== Committing modified tree to OSTree repo =="
 
-NEW_COMMIT=$(sudo ostree commit \
+# Commit the modified tree with signed modules and kernel to the OSTree repo
+NEW_COMMIT=$(ostree commit \
     --repo="$REPO" \
     --branch="$BRANCH" \
-    --selinux \
     --tree=dir="$WORKDIR" \
-    --subject="Signed kernel modules ($(date))")
+    --subject="Signed kernel modules and kernel image ($(date))")
 
 echo "New commit: $NEW_COMMIT"
 
 echo "== Deploying new commit =="
 
-sudo ostree admin deploy "$BRANCH"
+# Deploy the new commit so it will be used at the next reboot
+ostree admin deploy "$BRANCH"
 
 echo
 echo "Deployment ready for next reboot."
 echo
-echo "Reboot to use signed modules:"
+echo "Reboot to use signed modules and kernel:"
 echo "  systemctl reboot"
