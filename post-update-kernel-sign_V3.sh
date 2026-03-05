@@ -4,7 +4,7 @@ set -euo pipefail
 # OSTree variables
 REPO="/sysroot/ostree/repo"
 WORKDIR="/tmp/nextboot"
-BRANCH="custom/signed-nextboot"
+#BRANCH="custom/signed-nextboot"
 MODULE_DIR="/tmp/nextboot/usr/lib/modules"
 
 echo "== Getting current OSTree commit =="
@@ -59,7 +59,7 @@ echo "New commit: $NEW_COMMIT"
 echo "== Deploying new commit =="
 
 # Deploy the new commit so it will be used at the next reboot
-ostree admin deploy "$BRANCH"
+ostree admin deploy # "$BRANCH"
 
 echo
 echo "Deployment ready for next reboot."
