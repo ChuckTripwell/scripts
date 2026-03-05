@@ -8,15 +8,9 @@ rm -rf "$WORKDIR" || true
 mkdir -p "$WORKDIR"
 
 # Detect current commit and branch
-COMMIT=$(ostree admin status --json | jq -r '.deployments[0].checksum')
-BRANCH=$(ostree admin status --json | jq -r '.deployments[0].origin')
-
-[[ -z "$COMMIT" || -z "$BRANCH" || "$COMMIT" == "null" || "$BRANCH" == "null" ]] && {
-    echo "Failed to detect current commit or branch"; exit 1
-}
-
-echo "Current commit: $COMMIT"
-echo "Current branch: $BRANCH"
+# Get current commit and branch without jq
+COMMIT=$(ostree admin status | grep '^  Booted ref:' | awk '{print $3}')
+BRANCH="$COMMIT"
 
 # Checkout only /usr/lib/modules (kernel + modules)
 ostree checkout --union --subpath=/usr/lib/modules "$COMMIT" "$WORKDIR"
