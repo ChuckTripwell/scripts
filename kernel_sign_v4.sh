@@ -1,47 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
-shopt -s nullglob
+
+WORKDIR="/tmp/nextboot"
 
 # Clean workspace
-rm -rf /tmp/nextboot || true
-#mkdir -p /tmp/nextboot
+rm -rf "$WORKDIR" || true
+mkdir -p "$WORKDIR"
 
-# Get next deployment commit (or fallback to booted)
-NEXT=$(ostree admin status | grep '^  Next ref:' | awk '{print $3}')
-[[ -z "$NEXT" ]] && NEXT=$(ostree admin status | grep '^  Booted ref:' | awk '{print $3}')
+# Detect current commit and branch
+COMMIT=$(ostree admin status --json | jq -r '.deployments[0].checksum')
+BRANCH=$(ostree admin status --json | jq -r '.deployments[0].origin')
 
-# Get current branch
-BRANCH=$(ostree admin status | grep '^  Booted ref:' | awk '{print $3}')
+[[ -z "$COMMIT" || -z "$BRANCH" || "$COMMIT" == "null" || "$BRANCH" == "null" ]] && {
+    echo "Failed to detect current commit or branch"; exit 1
+}
 
-echo "Next deployment commit: $NEXT"
+echo "Current commit: $COMMIT"
 echo "Current branch: $BRANCH"
 
-# Checkout only kernel directories
-ostree checkout --repo=/sysroot/ostree/repo --subpath=/usr/lib/modules "$NEXT" /tmp/nextboot
+# Checkout only /usr/lib/modules (kernel + modules)
+ostree checkout --union --subpath=/usr/lib/modules "$COMMIT" "$WORKDIR"
 
-# Find the kernel dynamically
-KERNELS=(/tmp/nextboot/*/vmlinuz)
+# Sign kernel image
+KERNEL="$WORKDIR"/*/vmlinuz
+[[ -f "$KERNEL" ]] || { echo "Kernel not found!"; exit 1; }
 
-if [[ ${#KERNELS[@]} -eq 0 ]]; then
-    echo "Error: No kernel found under /tmp/nextboot/*/vmlinuz"
-    exit 1
-fi
-
-KERNEL=${KERNELS[0]}
-echo "Signing kernel: $KERNEL"
+echo "Signing kernel image: $KERNEL"
 sbctl sign -s "$KERNEL"
-echo "Signed: $KERNEL"
 
 # Commit overlay to current branch
 NEW=$(ostree commit \
     --repo=/sysroot/ostree/repo \
     --branch="$BRANCH" \
-    --parent="$NEXT" \
-    --tree=ref="$NEXT" \
-    --tree=dir=/tmp/nextboot \
-    --subject="Signed kernel image ($(date))")
+    --parent="$COMMIT" \
+    --tree=dir="$WORKDIR" \
+    --subject="Signed kernel and modules ($(date))")
 
 # Deploy new commit
 ostree admin deploy "$BRANCH"
 
-echo "Next boot will use the signed kernel. Reboot with: systemctl reboot"
+echo "Deployment ready. Reboot to use signed kernel and modules:"
+echo "  systemctl reboot"
