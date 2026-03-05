@@ -7,23 +7,25 @@ WORKDIR="/tmp/nextboot"
 echo "== Detecting current deployment =="
 STATUS=$(ostree admin status --json)
 COMMIT=$(jq -r '.deployments[0].checksum' <<<"$STATUS")
+BRANCH=$(jq -r '.deployments[0].origin' <<<"$STATUS")
 
-if [[ -z "$COMMIT" || "$COMMIT" == "null" ]]; then
-    echo "Failed to detect current commit"
+if [[ -z "$COMMIT" || "$COMMIT" == "null" || -z "$BRANCH" || "$BRANCH" == "null" ]]; then
+    echo "Failed to detect current commit or branch"
     exit 1
 fi
 
 echo "Current commit: $COMMIT"
+echo "Current branch: $BRANCH"
 
 echo "== Preparing workspace =="
 rm -rf "$WORKDIR" || true
 mkdir -p "$WORKDIR"
 
-echo "== Checking out all kernel module directories =="
-# This checks out all subdirectories under /usr/lib/modules/
+echo "== Checking out /usr/lib/modules =="
+# Checkout all kernel module directories dynamically
 ostree checkout --repo="$REPO" --subpath=/usr/lib/modules "$COMMIT" "$WORKDIR"
 
-# Automatically find the kernel image(s) using wildcard
+# Automatically find all kernel images
 KERNEL_IMAGES=("$WORKDIR"/*/vmlinuz)
 
 if [[ ${#KERNEL_IMAGES[@]} -eq 0 ]]; then
@@ -37,9 +39,10 @@ for kernel in "${KERNEL_IMAGES[@]}"; do
     echo "Signed: $kernel"
 done
 
-echo "== Creating overlay commit =="
+echo "== Creating overlay commit on current branch =="
 NEW_COMMIT=$(ostree commit \
     --repo="$REPO" \
+    --branch="$BRANCH" \
     --parent="$COMMIT" \
     --tree=ref="$COMMIT" \
     --tree=dir="$WORKDIR" \
@@ -48,7 +51,7 @@ NEW_COMMIT=$(ostree commit \
 echo "New commit: $NEW_COMMIT"
 
 echo "== Deploying =="
-ostree admin deploy "$NEW_COMMIT"
+ostree admin deploy "$BRANCH"
 
 echo
 echo "Next boot will use the signed kernel(s)."
