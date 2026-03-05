@@ -4,8 +4,8 @@ set -euo pipefail
 # OSTree variables
 REPO="/sysroot/ostree/repo"
 WORKDIR="/tmp/nextboot"
-#BRANCH="custom/signed-nextboot"
-MODULE_DIR="/tmp/nextboot/usr/lib/modules"
+BRANCH="custom/signed-nextboot"
+MODULE_DIR="/tmp/nextboot/"
 
 echo "== Getting current OSTree commit =="
 
@@ -44,7 +44,7 @@ fi
 
 # Sign the kernel image (vmlinuz)
 echo "Signing kernel image (vmlinuz)..."
-sbctl sign -s "$MODULE_DIR"/vmlinuz
+sbctl sign -s "$MODULE_DIR"/*/vmlinuz
 
 echo "== Committing only signed kernel and modules to OSTree repo =="
 
@@ -59,7 +59,7 @@ echo "New commit: $NEW_COMMIT"
 echo "== Deploying new commit =="
 
 # Deploy the new commit so it will be used at the next reboot
-ostree admin deploy # "$BRANCH"
+ostree admin deploy "$BRANCH"
 
 echo
 echo "Deployment ready for next reboot."
