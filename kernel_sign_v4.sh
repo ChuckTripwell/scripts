@@ -1,43 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="/sysroot/ostree/repo"
-WORKDIR="/tmp/nextboot"
-
 # Clean workspace
-rm -rf "$WORKDIR" || true
-mkdir -p "$WORKDIR"
+rm -rf /tmp/nextboot || true
+mkdir -p /tmp/nextboot
 
-# Get current deployment commit and branch
-CURRENT_COMMIT=$(ostree admin status --json | jq -r '.deployments[0].checksum')
-CURRENT_BRANCH=$(ostree admin status --json | jq -r '.deployments[0].origin')
+# Get next deployment commit (or fallback to booted)
+NEXT=$(ostree admin status | grep '^  Next ref:' | awk '{print $3}')
+[[ -z "$NEXT" ]] && NEXT=$(ostree admin status | grep '^  Booted ref:' | awk '{print $3}')
 
-echo "Current commit: $CURRENT_COMMIT"
-echo "Current branch: $CURRENT_BRANCH"
+# Get current branch
+BRANCH=$(ostree admin status | grep '^  Booted ref:' | awk '{print $3}')
 
-# Checkout only the directories under /usr/lib/modules
-ostree checkout --repo="$REPO" --subpath=/usr/lib/modules "$CURRENT_COMMIT" "$WORKDIR"
+echo "Next deployment commit: $NEXT"
+echo "Current branch: $BRANCH"
 
-# Sign all kernel images dynamically (wildcard)
-for kernel in "$WORKDIR"/*/vmlinuz; do
-    if [[ -f "$kernel" ]]; then
-        sbctl sign -s "$kernel"
-        echo "Signed: $kernel"
-    fi
-done
+# Checkout only kernel directories
+ostree checkout --repo=/sysroot/ostree/repo --subpath=/usr/lib/modules "$NEXT" /tmp/nextboot
 
-# Commit overlay to the current branch
-NEW_COMMIT=$(ostree commit \
-    --repo="$REPO" \
-    --branch="$CURRENT_BRANCH" \
-    --parent="$CURRENT_COMMIT" \
-    --tree=ref="$CURRENT_COMMIT" \
-    --tree=dir="$WORKDIR" \
-    --subject="Signed kernel image(s) ($(date))")
+# Sign the known kernel image
+KERNEL=$(echo /tmp/nextboot/*/vmlinuz)
+[[ -f "$KERNEL" ]] || { echo "Kernel not found!"; exit 1; }
 
-echo "New commit: $NEW_COMMIT"
+sbctl sign -s "$KERNEL"
+echo "Signed: $KERNEL"
 
-# Deploy new commit for next boot
-ostree admin deploy "$CURRENT_BRANCH"
+# Commit overlay to current branch
+NEW=$(ostree commit \
+    --repo=/sysroot/ostree/repo \
+    --branch="$BRANCH" \
+    --parent="$NEXT" \
+    --tree=ref="$NEXT" \
+    --tree=dir=/tmp/nextboot \
+    --subject="Signed kernel image ($(date))")
 
-echo "Next boot will use the signed kernel(s). Reboot with: systemctl reboot"
+# Deploy new commit
+ostree admin deploy "$BRANCH"
+
+echo "Next boot will use the signed kernel. Reboot with: systemctl reboot"
