@@ -1,9 +1,4 @@
-# Generate PEM private key
-openssl genrsa -out MOK.priv 4096
-chmod 600 MOK.priv
-
-# Generate PEM certificate
-openssl req -new -x509 -sha256 -key MOK.priv -out MOK.crt -days 3650 -subj "/CN=My MOK Key/"
-
-# Convert certificate to DER
-openssl x509 -in MOK.crt -outform der -out MOK.der
+# Generates 4096-bit RSA private key + PEM certificate + DER certificate + PKCS12 bundle
+openssl req -new -x509 -newkey rsa:4096 -nodes -keyout ./MOK.priv -out ./MOK.pem -days 3650 -subj "/CN=Frankengold MOK/" && \
+openssl x509 -outform DER -in ./MOK.pem -out ./MOK.der && \
+openssl pkcs12 -export -out ./MOK.p12 -inkey ./MOK.priv -in ./MOK.pem -passout pass:
