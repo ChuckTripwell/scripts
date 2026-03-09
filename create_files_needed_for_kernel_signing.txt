@@ -1,0 +1,9 @@
+# Generate PEM private key
+openssl genrsa -out MOK.priv 4096
+chmod 600 MOK.priv
+
+# Generate PEM certificate
+openssl req -new -x509 -sha256 -key MOK.priv -out MOK.crt -days 3650 -subj "/CN=My MOK Key/"
+
+# Convert certificate to DER
+openssl x509 -in MOK.crt -outform der -out MOK.der
