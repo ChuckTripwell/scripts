@@ -2,3 +2,17 @@
 openssl req -new -x509 -newkey rsa:4096 -nodes -keyout ./MOK.priv -out ./MOK.pem -days 3650 -subj "/CN=Frankengold MOK/" && \
 openssl x509 -outform DER -in ./MOK.pem -out ./MOK.der && \
 openssl pkcs12 -export -out ./MOK.p12 -inkey ./MOK.priv -in ./MOK.pem -passout pass:
+
+
+
+
+
+
+# ??
+
+openssl req -new -x509 -newkey rsa:4096 \
+  -keyout MOK.priv \
+  -out MOK.pem \
+  -nodes \
+  -days 3650 \
+  -subj "/CN=Module Signing MOK/"
